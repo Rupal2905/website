@@ -15,6 +15,10 @@ if 'playing' not in st.session_state:
     st.session_state.playing = False
 if 'current_frame' not in st.session_state:
     st.session_state.current_frame = 0
+if 'enabled_tickers' not in st.session_state:
+    st.session_state.enabled_tickers = None
+if 'show_date_overlay' not in st.session_state:
+    st.session_state.show_date_overlay = True
 
 # Title and description
 st.title('RRG Indicator')
@@ -102,6 +106,19 @@ def get_color(x, y):
     elif status == 'weakening':
         return 'yellow'
 
+# Initialize or get enabled tickers from session state
+if st.session_state.enabled_tickers is None:
+    st.session_state.enabled_tickers = {ticker: True for ticker in tickers}
+
+# Add ticker visibility controls
+st.sidebar.subheader('📊 Ticker Visibility')
+st.sidebar.markdown('Toggle which tickers to display')
+
+# Update enabled tickers based on checkbox state
+for ticker in tickers:
+    checked = st.sidebar.checkbox(ticker, value=st.session_state.enabled_tickers[ticker], key=f'ticker_{ticker}')
+    st.session_state.enabled_tickers[ticker] = checked
+
 # Add animation controls
 st.sidebar.subheader('🎬 Animation Controls')
 col1, col2 = st.sidebar.columns(2)
@@ -127,6 +144,12 @@ tail = st.sidebar.slider(
 st.sidebar.subheader('📅 End Date')
 st.sidebar.markdown('Choose the specific end date for the analysis')
 
+# Add display options
+st.sidebar.subheader('🎨 Display Options')
+show_date = st.sidebar.checkbox('Show Date Overlay', value=st.session_state.show_date_overlay)
+st.session_state.show_date_overlay = show_date
+
+
 # Get dates list for the slider
 dates = rsr_tickers[0].index.strftime('%Y-%m-%d').tolist()
 
@@ -146,9 +169,6 @@ if st.session_state.playing:
 else:
     st.session_state.current_frame = end_date_idx - tail
 
-# Display selected date
-st.sidebar.markdown(f"Selected date: **{dates[end_date_idx]}**")
-
 # Update RRG plot
 def create_rrg_plot(tail, end_date_idx):
     start_date = rsr_tickers[0].index[end_date_idx - tail] if end_date_idx - tail >= 0 else rsr_tickers[0].index[0]
@@ -156,7 +176,11 @@ def create_rrg_plot(tail, end_date_idx):
 
     scatter_traces = []
 
-    for i in range(len(tickers)):
+    for i, ticker in enumerate(tickers):
+        # Skip disabled tickers
+        if not st.session_state.enabled_tickers[ticker]:
+            continue
+
         filtered_rsr_tickers = rsr_tickers[i].loc[(rsr_tickers[i].index > start_date) & 
                                                 (rsr_tickers[i].index <= end_date)]
         filtered_rsm_tickers = rsm_tickers[i].loc[(rsm_tickers[i].index > start_date) & 
@@ -164,45 +188,60 @@ def create_rrg_plot(tail, end_date_idx):
 
         color = get_color(filtered_rsr_tickers.values[-1], filtered_rsm_tickers.values[-1])
 
+        # Create single trace with different markers for trail and current point
+        marker_symbols = ['circle'] * (len(filtered_rsr_tickers) - 1) + ['triangle-up']
+        marker_sizes = [10] * (len(filtered_rsr_tickers) - 1) + [15]
+
         scatter_traces.append(go.Scatter(
             x=filtered_rsr_tickers.values,
             y=filtered_rsm_tickers.values,
             mode='markers+lines',
-            marker=dict(size=10, color=color),
-            name=tickers[i],
-            hovertext=tickers[i],
-            hoverinfo="text"
+            marker=dict(
+                size=marker_sizes,
+                color=color,
+                symbol=marker_symbols
+            ),
+            name=ticker,
+            hovertext=[f"{ticker} (historical)" if i < len(filtered_rsr_tickers)-1 else f"{ticker} (current)" 
+                      for i in range(len(filtered_rsr_tickers))],
+            hoverinfo="text",
+            showlegend=True
         ))
 
-    figure = go.Figure(
-        data=scatter_traces,
-        layout=go.Layout(
-            title='RRG Indicator',
-            xaxis=dict(title='RS Ratio', range=[94, 106]),
-            yaxis=dict(title='RS Momentum', range=[94, 106]),
-            shapes=[
-                {'type': 'line', 'x0': 100, 'x1': 100, 'y0': 94, 'y1': 106, 
-                 'line': {'color': 'black', 'dash': 'dash'}},
-                {'type': 'line', 'x0': 94, 'x1': 106, 'y0': 100, 'y1': 100, 
-                 'line': {'color': 'black', 'dash': 'dash'}},
-                {'type': 'rect', 'x0': 94, 'x1': 100, 'y0': 94, 'y1': 100, 
-                 'fillcolor': 'red', 'opacity': 0.2, 'layer': "below"},
-                {'type': 'rect', 'x0': 100, 'x1': 106, 'y0': 94, 'y1': 100, 
-                 'fillcolor': 'yellow', 'opacity': 0.2, 'layer': "below"},
-                {'type': 'rect', 'x0': 100, 'x1': 106, 'y0': 100, 'y1': 106, 
-                 'fillcolor': 'green', 'opacity': 0.2, 'layer': "below"},
-                {'type': 'rect', 'x0': 94, 'x1': 100, 'y0': 100, 'y1': 106, 
-                 'fillcolor': 'blue', 'opacity': 0.2, 'layer': "below"}
-            ],
-            annotations=[
-                {'x': 95, 'y': 105, 'text': 'Improving', 'showarrow': False, 'font': {'size': 14}},
-                {'x': 104, 'y': 105, 'text': 'Leading', 'showarrow': False, 'font': {'size': 14}},
-                {'x': 104, 'y': 95, 'text': 'Weakening', 'showarrow': False, 'font': {'size': 14}},
-                {'x': 95, 'y': 95, 'text': 'Lagging', 'showarrow': False, 'font': {'size': 14}}
-            ]
-        )
+    # Create layout with optional date overlay
+    layout = go.Layout(
+        title=dict(
+            text='RRG Indicator' + (f' - {end_date.strftime("%Y-%m-%d")}' if st.session_state.show_date_overlay else ''),
+            y=0.95,
+            x=0.5,
+            xanchor='center',
+            yanchor='top'
+        ),
+        xaxis=dict(title='RS Ratio', range=[94, 106]),
+        yaxis=dict(title='RS Momentum', range=[94, 106]),
+        shapes=[
+            {'type': 'line', 'x0': 100, 'x1': 100, 'y0': 94, 'y1': 106, 
+             'line': {'color': 'black', 'dash': 'dash'}},
+            {'type': 'line', 'x0': 94, 'x1': 106, 'y0': 100, 'y1': 100, 
+             'line': {'color': 'black', 'dash': 'dash'}},
+            {'type': 'rect', 'x0': 94, 'x1': 100, 'y0': 94, 'y1': 100, 
+             'fillcolor': 'red', 'opacity': 0.2, 'layer': "below"},
+            {'type': 'rect', 'x0': 100, 'x1': 106, 'y0': 94, 'y1': 100, 
+             'fillcolor': 'yellow', 'opacity': 0.2, 'layer': "below"},
+            {'type': 'rect', 'x0': 100, 'x1': 106, 'y0': 100, 'y1': 106, 
+             'fillcolor': 'green', 'opacity': 0.2, 'layer': "below"},
+            {'type': 'rect', 'x0': 94, 'x1': 100, 'y0': 100, 'y1': 106, 
+             'fillcolor': 'blue', 'opacity': 0.2, 'layer': "below"}
+        ],
+        annotations=[
+            {'x': 95, 'y': 105, 'text': 'Improving', 'showarrow': False, 'font': {'size': 14}},
+            {'x': 104, 'y': 105, 'text': 'Leading', 'showarrow': False, 'font': {'size': 14}},
+            {'x': 104, 'y': 95, 'text': 'Weakening', 'showarrow': False, 'font': {'size': 14}},
+            {'x': 95, 'y': 95, 'text': 'Lagging', 'showarrow': False, 'font': {'size': 14}}
+        ]
     )
 
+    figure = go.Figure(data=scatter_traces, layout=layout)
     return figure, start_date, end_date
 
 # Create and display plot
@@ -214,17 +253,18 @@ st.subheader('Financial Metrics')
 
 # Create DataFrame for table
 table_data = []
-for i in range(len(tickers)):
-    price = np.round(tickers_data[tickers[i]][end_date], 2)
-    change = np.round((tickers_data[tickers[i]][end_date] - tickers_data[tickers[i]][start_date]) / 
-                  tickers_data[tickers[i]][start_date] * 100, 1)
+for i, ticker in enumerate(tickers):
+    if st.session_state.enabled_tickers[ticker]:  # Only show enabled tickers in the table
+        price = np.round(tickers_data[ticker][end_date], 2)
+        change = np.round((tickers_data[ticker][end_date] - tickers_data[ticker][start_date]) / 
+                      tickers_data[ticker][start_date] * 100, 1)
 
-    table_data.append({
-        'Symbol': tickers[i],
-        'Name': tickers[i],  # Using symbol as name since actual names aren't available
-        'Price': price,
-        'Change (%)': change
-    })
+        table_data.append({
+            'Symbol': ticker,
+            'Name': ticker,  # Using symbol as name since actual names aren't available
+            'Price': price,
+            'Change (%)': change
+        })
 
 df = pd.DataFrame(table_data)
 
